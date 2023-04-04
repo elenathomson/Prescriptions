@@ -16,4 +16,4 @@ It is a monthly dataset. The data was downloaded in December 2022. The datasets 
 The preview of the report is below and the report can be seen [ here ](https://elenathomson.github.io/Prescriptions)
 The [ code ](Report_prescriptions.Rmd) is also available as rmd file.
 
-![Preview](01_images/Preview.png)
+![Preview](01_images/Preview.PNG)
