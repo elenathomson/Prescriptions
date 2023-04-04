@@ -1,0 +1,567 @@
+---
+title: "Analysis of hospital prescription data"
+author: "Elena Thomson"
+date: "2023-01-30"
+output: 
+    html_document:
+        toc: TRUE
+        theme: flatly
+        highlight: tango
+        code_folding: show
+        df_print: paged
+       
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+
+This is an R Markdown report of the analysis of hospital prescription data. 
+
+I have transformed the ten original datasets, joined them together and analysed. I have prepared nine questions about this dataset. I have shown the total number and the total price of the prescriptions. Only in hospitals the spending on prescriptions from January till October 2022 consists of around £800M. The most prescribed medical area (by BNF chapter) is Central Nervous System. The most prescribed medicine by cost is Physeptone by number of items is Methadone. I also showed the time series analysis of the growing expenses by month and found the three-month moving average that is around £80M. 
+
+# Objectives
+
+My aim doing this project was to improve my wrangling skills using `dplyr` and `tidyverse` packages. And demonstrate the ability to produce insights from the real world data.
+
+# Data
+
+Data comes from NHS Business Service Authority (NHSBSA) : <https://www.nhsbsa.nhs.uk/prescription-data/prescribing-data/hospital-prescribing-dispensed-community> It is a link where more information can be found. 
+
+The link to download actual data is here <https://opendata.nhsbsa.net/dataset/hospital-prescribing-dispensed-in-the-community>
+
+The data captured from prescription processing is used to calculate reimbursement and remuneration. The data provided is based on England Hospital Trust prescribing only and includes prescription items which were prescribed in England and dispensed in the community in England as well as items prescribed in England and dispensed in Wales, Scotland, and the Isle of Man.
+
+It is a monthly dataset. The data was downloaded in December 2022. The datasets available at the time were from January to October 2022.
+
+This data excludes: 
+
+-	Items not dispensed, disallowed and those returned to the contractor for further clarification 
+-	Prescriptions prescribed and dispensed in Prisons, Hospitals and Private prescriptions
+-	Items prescribed but not presented for dispensing or not submitted to NHS Prescription Services by the dispenser
+
+This data does not contain any information about the patients including their diagnosis and demographics.
+
+Each monthly dataset consists of the next variables:
+
+-	period name
+-	BNF name
+-	BNF code
+-	hospital trust code
+-	hospital trust name
+-	quantity
+-	total quantity
+-	total items
+-	total actual cost
+-	total NIC
+
+Period name is the month and year when prescriptions was recorded through the system.
+
+BNF name and BNF code are the British National Formulary name of a medical product and a 15 digit code in which the first seven digits are allocated according to the categories in the BNF and the last 8 digits represent the medicinal product.
+
+Hospital Trust code and names are the code and name of the trust where the product was prescribed.
+
+Quantity is the quantity prescribed.
+
+Total Items shows the number of times a product appears on a prescription form not the quantity prescribed.
+
+Total Quantity is the number of items multiplied by the quantity prescribed.
+
+Total Net Ingredient cost NIC is the basic price of a drug.
+
+Total Actual Cost is the calculated value including discounts and some adjustments. Actual Cost only relates to England.
+
+
+```{r library, include=FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(lubridate)
+library(tidyquant)
+library(flextable)
+```
+
+## Glimpse at data
+
+As an example I am showing here January 2022 data 
+
+```{r january}
+
+#load the data
+hosp_prescrip_01_22_tbl <- read_rds("00_data/hosp_prescrip_01_22_tbl.rds")
+
+hosp_pr_2022_post <- read_rds("00_data/hosp_pr_2022_post.rds")
+
+
+hosp_prescrip_01_22_tbl %>% glimpse()
+```
+## Data Transformation
+
+I have made the transformations and joined individual datasets together to have one table.
+
+The transformation included:
+
+- transformation of period in dates to use it in time series analysis using `lubridate` package
+- transformation of BNF code to obtain the BNF chapter and then to obtain a BNF chapter description
+- calculating the TOTAL.ITEMS.COST by multiplying TOTAL.ITEMS and TOTAL.ACTUAL.COST
+- cleaning and creation of "look up table" with hospital trusts, their most up to date name, address and postcode using HOSPITAL.TRUST.CODE for future analysis
+- joining "look up table" to create final table with all the data in one place
+
+The first 6 rows of a final table that will be used for further analysis:
+```{r final_glimpse }
+hosp_pr_2022_post %>% glimpse()
+```
+
+
+```{r final_table}
+hosp_pr_2022_post %>% head() 
+
+```
+
+# Questions
+
+In my report I wanted to answer the next questions:
+
+1. What is the total number and cost of prescriptions?
+2. What is the total cost of prescriptions by BNF chapter?
+3. What is three top medicines by cost that are prescribed in each chapter?
+4. What is the total number of prescriptions in each chapter?
+5. What are the top prescribed medicines by number of items prescribed?
+6. Which NHS trust spent the most?
+7. Which NHS trust prescribed the most items?
+8. How the expenses are growing each month?
+9. What is the rolling mean spending by month?
+
+
+# Answers to the questions
+## 1. What is the total number and cost of prescriptions?
+
+```{r out.width="100%"}
+hosp_pr_2022_post %>% 
+    summarise(total.items = sum(TOTAL.ITEMS),
+              total.cost  = sum(TOTAL.ITEMS.COST)) %>%
+    
+    mutate(total.items.chr = scales::number(total.items),
+           total.cost.chr  = scales::dollar(total.cost, prefix = "£")) %>% 
+    
+    select(total.items.chr, total.cost.chr) %>% 
+
+#rename the columns
+    rename("Total Items" = total.items.chr,
+           "Total Cost"  = total.cost.chr) %>%
+    
+    #add a table
+    flextable() %>% 
+    autofit() %>%
+    bold(part = "header") %>% 
+    add_footer_lines("") %>% 
+    add_header_lines("Table 1. Prescriptions in 2022")
+```
+
+
+## 2. What is the total cost of prescriptions by BNF chapter?
+We can see on the Fig. 1 that the most spending on medicines is in the next BNF chapters: Central Nervous System, Skin and Malignant disease and Immunosuppression. Those three chapters cover 73.4% of all prescriptions in 2022. Already the first chapter, Central Nervous System, contributes to more than half of the spending and consists of more than £459M.
+
+```{r q1, message=FALSE, warning=FALSE, out.height="700px", out.width="100%"}
+##data transformation
+n <- 7
+
+hosp_pr_2022_post %>% 
+    select(BNF.CHAPTER.CODE, BNF.CHAPTER.DESCRPT, TOTAL.ITEMS, TOTAL.ITEMS.COST) %>% 
+    mutate(BNF.CHAPTER.CODE = as_factor(BNF.CHAPTER.CODE) %>% 
+               fct_lump(n = n, w = TOTAL.ITEMS.COST)) %>% 
+    group_by(BNF.CHAPTER.CODE, BNF.CHAPTER.DESCRPT) %>% 
+    summarise(N.ITEMS = sum(TOTAL.ITEMS), 
+              COST    = sum(TOTAL.ITEMS.COST)) %>%
+   ungroup() %>% view()
+#I've got not really what I wanted. I wanted to have one description as a factor and than total price and number, anyway try again below:
+
+top_prescr_by_chapt_tbl <-  hosp_pr_2022_post %>% 
+    select(BNF.CHAPTER.PLUS.CODE, TOTAL.ITEMS, TOTAL.ITEMS.COST) %>% 
+    mutate(BNF.CHAPTER.PLUS.CODE = as_factor(BNF.CHAPTER.PLUS.CODE) %>% 
+               fct_lump(n = n, w = TOTAL.ITEMS.COST)) %>% 
+    group_by(BNF.CHAPTER.PLUS.CODE) %>% 
+    summarise(N.ITEMS = sum(TOTAL.ITEMS), 
+              COST    = sum(TOTAL.ITEMS.COST)) %>%
+   ungroup() %>% 
+    
+    #I want to arrange it in the right order for a plot
+    
+    mutate(BNF.CHAPTER.PLUS.CODE = BNF.CHAPTER.PLUS.CODE %>% fct_reorder(COST)) %>%
+    mutate(BNF.CHAPTER.PLUS.CODE = BNF.CHAPTER.PLUS.CODE %>% fct_relevel("Other", after = 0)) %>% 
+    
+    arrange(desc(BNF.CHAPTER.PLUS.CODE)) %>% 
+    #I want to add label to my plot
+    mutate(N.ITEMS_text = scales::number(N.ITEMS),
+           COST_text    = scales::dollar(COST, scale = 1e-6, prefix = "£", suffix = "M")) %>% 
+    
+    #Cumulative percent
+    mutate(cum_pct = cumsum(COST)/sum(COST)) %>% 
+    mutate(cum_pct_text = scales::percent(cum_pct)) %>% 
+    
+    
+    #Rank
+    mutate(rank = row_number()) %>% 
+    mutate(rank = case_when(
+        rank == max(rank) ~ NA_integer_,
+        TRUE ~ rank)) %>% 
+    
+    #Label text
+    mutate(label_text = str_glue("Rank: {rank}\nCost: {COST_text}\nCumPct: {cum_pct_text}"))
+    
+    #Now the visualisation
+    
+ g1 <-   top_prescr_by_chapt_tbl %>% 
+       
+       #plot
+       ggplot(aes(COST, BNF.CHAPTER.PLUS.CODE)) +
+      
+   
+        #geometries
+        geom_segment(aes(xend = 0, yend = BNF.CHAPTER.PLUS.CODE),
+                     colour = palette_light()[1],
+                     size = 1) +
+       geom_point(aes(size = COST),
+                  colour = palette_light()[1]) +
+       
+       #labels
+       geom_label(aes(label = label_text),
+                  hjust = "inward",
+                  size  = 2.5,
+                  colour = palette_light()[1]) +
+   #Formating
+   scale_x_continuous(labels = scales::dollar_format(scale = 1e-6, prefix = "£", suffix = "M")) +
+       
+       labs(
+           title = str_glue("Fig.1. Top {n} prescriptions in 2022"),
+           x     = "Cost (£M)",
+           y     = "BNF chapter",
+           caption = str_glue("Already first chapter contributes
+                              to half of the spending on prescriptions")
+            
+       ) +
+       
+       theme_tq() +
+       
+       theme(
+               legend.position = "none",
+               title = element_text(face = "bold"),
+               plot.caption = element_text(face = "bold.italic")
+           )
+   g1
+   
+```
+
+## 3. What are three top medicines by cost that are prescribed in each BNF chapter (top 7)?
+We can see that the first chapter number 04 contributes to the most expensive spending that exceed £148M (for the first three medicines). Physotone oral solution is the most expensive medicine taking into consideration the price and the quantity (around £60M and more than 76k items).
+```{r message=FALSE, warning=FALSE}
+
+#data transformation
+top_3_med_bnf_chap_price <- hosp_pr_2022_post %>% group_by(BNF.CHAPTER.CODE, BNF.CHAPTER.DESCRPT, BNF.NAME) %>% 
+    summarise(N.ITEMS = sum(TOTAL.ITEMS), 
+              COST    = sum(TOTAL.ITEMS.COST)) %>%
+    arrange(desc(COST)) %>% 
+    
+    ungroup() %>% 
+    
+    group_by(BNF.CHAPTER.CODE) %>% 
+    top_n(3) 
+
+#level adjustment
+sorted <- hosp_pr_2022_post %>% 
+    select(BNF.CHAPTER.CODE, BNF.CHAPTER.DESCRPT, BNF.NAME, TOTAL.ITEMS, TOTAL.ITEMS.COST) %>% 
+    group_by(BNF.CHAPTER.CODE, BNF.CHAPTER.DESCRPT) %>% 
+    summarise(N.ITEMS = sum(TOTAL.ITEMS), 
+              COST    = sum(TOTAL.ITEMS.COST)) %>%
+    arrange(desc(COST)) %>% 
+    
+    ungroup() %>% view()
+ 
+a <-  sorted$BNF.CHAPTER.CODE
+
+#presentation into table
+
+top_3_med_bnf_chap_price %>% 
+    arrange(BNF.CHAPTER.CODE, desc(COST)) %>%
+    
+    arrange(factor(BNF.CHAPTER.CODE, levels = a)) %>% 
+    
+    filter(BNF.CHAPTER.CODE %in% a[1:7]) %>% 
+    
+    #change the presentation of the numbers in table
+    mutate(N.ITEMS = scales::number(N.ITEMS),
+           COST    = scales::dollar(COST, prefix = "£")) %>% 
+    #rename the columns
+    rename("BNF Chapter\nCode" = BNF.CHAPTER.CODE,
+           "Chapter Description" = BNF.CHAPTER.DESCRPT,
+           "BNF Name" = BNF.NAME,
+         "Number of Items" = N.ITEMS,
+        "Total Cost" = COST) %>%
+
+    #add a table
+    flextable() %>% 
+    autofit() %>%
+    bold(part = "header") %>% 
+    add_footer_lines("") %>% 
+    add_header_lines("Table 2. Top 3 medicine in each BNF chapter (top 7) sorted by cost")
+
+```
+
+## 4. What is the total number of prescriptions in each BNF chapter?
+The most prescribed medicines aka area of disease are Central nervous systems, Infections and Eye treatment. Indicating the prevalent disease areas in 2022 for people who get the prescriptions from hospitals.
+
+
+```{r message=FALSE, warning=FALSE}
+hosp_pr_2022_post %>% group_by(BNF.CHAPTER.CODE, BNF.CHAPTER.DESCRPT) %>% 
+    summarise(N.ITEMS = sum(TOTAL.ITEMS), 
+              COST    = sum(TOTAL.ITEMS.COST)) %>%
+    arrange(desc(N.ITEMS)) %>% 
+    ungroup() %>% 
+
+    #change the presentation of the numbers in table
+    mutate(N.ITEMS  = scales::number(N.ITEMS),
+            COST    = scales::dollar(COST, prefix = "£")) %>% 
+    #rename the columns
+    rename("BNF Chapter\nCode" = BNF.CHAPTER.CODE,
+           "Chapter Description" = BNF.CHAPTER.DESCRPT,
+           "Number of Items" = N.ITEMS,
+           "Total Cost" = COST) %>%
+    
+    #add a table
+    flextable() %>% 
+    autofit() %>%
+    bold(part = "header") %>% 
+    add_footer_lines("") %>% 
+    add_header_lines("Table 3. Total number of prescriptions in each BNF chapter and its cost")
+
+
+```
+
+## 5. What are the top prescribed medicines (top 7) by number of items prescribed?
+When we are looking at the total number prescribed it is methadone oral solution that is most frequent but less expensive compared to physeptone  that is prescribed the second (but is much more expensive).
+```{r message=FALSE, warning=FALSE}
+
+n <- 7
+
+sorted_3 <- hosp_pr_2022_post %>% 
+    group_by(BNF.CHAPTER.PLUS.CODE, BNF.NAME) %>% 
+    summarise(N.ITEMS = sum(TOTAL.ITEMS), 
+              COST    = sum(TOTAL.ITEMS.COST)) %>%
+    arrange(desc(N.ITEMS)) %>% 
+    
+    ungroup() %>% 
+    
+    slice(1:n)
+
+
+
+#data transformation and table presentation
+
+
+
+top_number_by_chapt_tbl <-  hosp_pr_2022_post %>% 
+    select(BNF.CHAPTER.PLUS.CODE, BNF.NAME, TOTAL.ITEMS, TOTAL.ITEMS.COST) %>% 
+    mutate(BNF.NAME = as_factor(BNF.NAME) %>% 
+               fct_lump(n = n, w = TOTAL.ITEMS)) %>% 
+    group_by(BNF.NAME) %>% 
+    summarise(N.ITEMS = sum(TOTAL.ITEMS), 
+              COST    = sum(TOTAL.ITEMS.COST)) %>%
+    ungroup() %>% 
+    
+    #I want to arrange it in the right order for a plot
+    
+    mutate(BNF.NAME = BNF.NAME %>% fct_reorder(N.ITEMS)) %>%
+    mutate(BNF.NAME = BNF.NAME %>% fct_relevel("Other", after = 0)) %>% 
+    
+    arrange(desc(BNF.NAME)) %>% 
+    #I want to add label to my plot
+    mutate(N.ITEMS_text = scales::number(N.ITEMS),
+           COST_text    = scales::dollar(COST, scale = 1e-6, prefix = "£", suffix = "M")) %>% 
+    
+    #Cumulative percent
+    mutate(cum_pct = cumsum(N.ITEMS)/sum(N.ITEMS)) %>% 
+    mutate(cum_pct_text = scales::percent(cum_pct)) %>% 
+    
+    
+    #Rank
+    mutate(rank = row_number()) %>% 
+    mutate(rank = case_when(
+        rank == max(rank) ~ NA_integer_,
+        TRUE ~ rank)) %>% 
+    
+    #Label text
+    mutate(label_text = str_glue("Rank: {rank}\nItems: {N.ITEMS_text}\nCost: {COST_text}"))
+
+#join the column from another table
+top_number_by_chapt_u_tbl <- sorted_3 %>% 
+    select(BNF.CHAPTER.PLUS.CODE, N.ITEMS) %>% 
+    full_join(top_number_by_chapt_tbl)
+
+#I am not sure that vis is better here I prefer to create a table!
+
+top_number_by_chapt_u_tbl %>% 
+    select(BNF.NAME, BNF.CHAPTER.PLUS.CODE, N.ITEMS_text, COST_text) %>% 
+    
+    #flaxtable
+    rename("BNF Name" = BNF.NAME,
+           "BNF Chapter" = BNF.CHAPTER.PLUS.CODE,
+           "Number of Items" = N.ITEMS_text,
+           "Total Cost" = COST_text) %>%
+    
+    #add a table
+    flextable() %>% 
+    autofit() %>%
+    bold(part = "header") %>% 
+    add_footer_lines("") %>% 
+    add_header_lines(str_glue("Table 4. Top {n} most prescribed medicine sorted by number of items"))
+
+```
+
+## 6. Which NHS trust (top 10) spent the most?
+It should be emphasized that It is not the way to compare trusts between them as each of the hospital is specialise in different medical areas and can be bigger or smaller depending on the region and population.
+```{r message=FALSE, warning=FALSE}
+hosp_pr_2022_post %>% group_by(HOSPITAL.TRUST) %>% 
+    summarise(N.ITEMS = sum(TOTAL.ITEMS), 
+              COST    = sum(TOTAL.ITEMS.COST)) %>%
+    arrange(desc(COST)) %>% 
+    ungroup() %>% 
+    top_n(10) %>% 
+#this mutate() transform it to character, so no possible to plot but better visibility - if I want to build a table
+mutate(N.ITEMS = scales::number(N.ITEMS),
+       COST    = scales::dollar(COST, prefix = "£")) %>% 
+    
+    
+    rename("NHS Trust Name" = HOSPITAL.TRUST,
+           "Number of Items" = N.ITEMS,
+           "Total Cost" = COST) %>%
+    
+    #add a table
+    flextable() %>% 
+    autofit() %>%
+    bold(part = "header") %>% 
+    add_footer_lines("") %>% 
+    add_header_lines(str_glue("Table 5. Top 10 NHS Trusts that prescribed the most considering cost"))
+
+```
+
+## 7. Which NHS trust (top 10) prescribed the most items?
+It should be emphasized that It is not the way to compare trusts between them as each of the hospital is specialise in different medical areas and can be bigger or smaller depending on the region and population.
+```{r message=FALSE, warning=FALSE}
+hosp_pr_2022_post %>% group_by(HOSPITAL.TRUST) %>% 
+    summarise(N.ITEMS = sum(TOTAL.ITEMS), 
+              COST    = sum(TOTAL.ITEMS.COST)) %>%
+    arrange(desc(N.ITEMS)) %>% 
+    ungroup() %>% 
+    
+    top_n(10) %>% 
+    
+    #this mutate() transform it to character, so no possible to plot but better visibility - if I want to build a table
+    mutate(N.ITEMS = scales::number(N.ITEMS, big.mark = ","),
+           COST    = scales::dollar(COST, prefix = "£")) %>% 
+    
+    rename("NHS Trust Name" = HOSPITAL.TRUST,
+           "Number of Items" = N.ITEMS,
+           "Total Cost" = COST) %>%
+    
+    #add a table
+    flextable() %>% 
+    autofit() %>%
+    bold(part = "header") %>% 
+    add_footer_lines("") %>% 
+    add_header_lines(str_glue("Table 6. Top 10 NHS Trusts that prescribed the most considering number of items"))
+```
+
+
+## 8. How the expenses are growing each month? 
+The total expenses reach almost £800M and almost 4M items from January to October in 2022. It is interesting to observe the gradual increase month over month.
+```{r message=FALSE, warning=FALSE, out.height="700px", out.width="100%"}
+#create a data set grouped by month
+hosp_pr_2022_sum_month <-     hosp_pr_2022_post  %>%
+    select(PERIOD, PERIOD.YEAR, PERIOD.MONTH, TOTAL.ITEMS, TOTAL.ITEMS.COST) %>% 
+    #group by month so there are 10 groups now
+    group_by(PERIOD.MONTH) %>% 
+    
+    #summarise to get the sum of prescriptions by each month
+    summarise(monthly_items = sum(TOTAL.ITEMS),
+              monthly_cost  = sum(TOTAL.ITEMS.COST)) %>% 
+    ungroup()
+    
+#Now to do the calculations
+hosp_pr_2022_sum_month %>% 
+    #find the cumulative amount items prescribed and cumulative cost for each month
+    mutate(cumulative_items = cumsum(monthly_items),
+           cumulative_cost = cumsum(monthly_cost)) %>% 
+    #transform it to percentage but they are exactly the same, so delete one
+    mutate(cumulative_items_pct = cumulative_items/sum(monthly_items),
+           cumulative_cost_pct  = cumulative_cost/sum(monthly_cost)) %>% 
+    #but it is a character
+    mutate(cumulative_items_pct_chr = scales::percent(cumulative_items_pct),
+           cumulative_cost_pct_chr  = scales::percent(cumulative_cost_pct),
+           cumulative_items_chr = scales::number(cumulative_items)) %>%
+    
+    #Label text
+    mutate(label_text = str_glue("N Items: {cumulative_items_chr}\nCumPct items: {cumulative_items_pct_chr}\nCumPct Cost: {cumulative_cost_pct_chr}")) %>% 
+
+
+#plot    
+    ggplot(aes(PERIOD.MONTH, cumulative_cost, group = 1)) +
+    
+    
+    geom_point(size = 5, colour = "#2C3E50") +    
+    geom_line(size = 1.5, colour = "#2C3E50") +
+    
+    #labels
+    geom_label(aes(label = label_text),
+               hjust = "inward",
+               size  = 2,
+               colour = "#2C3E50") +
+    scale_y_continuous(labels = scales::dollar_format(scale = 1e-6, prefix = "£", suffix = "M")) +
+    
+    labs(title = "Fig. 2. Cumulative cost of the prescriptions by month in 2022",
+        x = "",
+        y = "Cumulative Cost"
+    ) +
+    
+    theme_tq()
+
+```
+
+
+
+## 9. What is the rolling mean spending by month? 
+The three-month moving average is around £80M.
+```{r message=FALSE, warning=FALSE, out.height="700px", out.width="100%"}
+
+#I want to plot moving averages
+hosp_pr_2022_sum_month %>%
+    mutate(roll_mean_3 = rollmean(monthly_cost, k = 3, na.pad = TRUE, align = "right")) %>% 
+   
+    #plot
+    ggplot(aes(x = PERIOD.MONTH, y = monthly_cost, group = 1))+   # start ggplot
+    geom_line(                        # plot raw values
+        size = 1,
+        alpha = 0.2                       # semi-transparent line
+    ) + 
+    
+    #adjust the limits and label on the scale
+   
+    scale_y_continuous(labels=scales::dollar_format(prefix = "£", 
+                                                    scale = 1e-6, suffix = "M"), 
+                       limits = c(40000000, 100000000)) +
+   
+    #add moving averages using tidyquant package
+     geom_ma(                 # plot moving average
+        n = 3,           
+        size = 1,
+        color = "blue")+ 
+    
+    labs(title = "Fig. 3. Time series analysis of total cost of prescriptions by month in 2022", 
+         subtitle = "Three months moving averages(blue line)", 
+         y = "Total Items Cost", x = "") + 
+    
+    theme_tq()
+
+```
+
+
+
